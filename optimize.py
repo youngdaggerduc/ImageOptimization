@@ -9,7 +9,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageSequence
 
 OUTPUT_DIR_NAME = "optimized"
 SUPPORTED = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp"}
@@ -49,11 +49,34 @@ def resize(img, max_w, max_h):
     return img.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
 
 
+def normalise_mode(img):
+    """WebP wants RGB or RGBA."""
+    has_alpha = img.mode in ("RGBA", "LA", "PA") or (img.mode == "P" and "transparency" in img.info)
+    return img.convert("RGBA" if has_alpha else "RGB")
+
+
 def optimize(src: Path, dest: Path, args):
     with Image.open(src) as img:
-        img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
-        img = resize(img, args.max_width, args.max_height)
-        img.save(dest, format="WEBP", quality=args.quality, method=6)
+        icc = img.info.get("icc_profile")  # keep colour profile so colours stay correct
+        animated = getattr(img, "is_animated", False) and getattr(img, "n_frames", 1) > 1
+
+        save_opts = dict(format="WEBP", quality=args.quality, method=6)
+        if icc:
+            save_opts["icc_profile"] = icc
+        # EXIF/GPS metadata is intentionally NOT copied (privacy + smaller files)
+
+        if animated:
+            frames, durations = [], []
+            for frame in ImageSequence.Iterator(img):
+                frames.append(resize(frame.convert("RGBA"), args.max_width, args.max_height))
+                durations.append(frame.info.get("duration", img.info.get("duration", 100)))
+            frames[0].save(dest, save_all=True, append_images=frames[1:], duration=durations,
+                           loop=img.info.get("loop", 0), **save_opts)
+        else:
+            out = ImageOps.exif_transpose(img)  # fix phone photos appearing sideways
+            out = normalise_mode(out)
+            out = resize(out, args.max_width, args.max_height)
+            out.save(dest, **save_opts)
 
 
 def main():
