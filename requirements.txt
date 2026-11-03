@@ -1,1 +1,3 @@
 Pillow>=9.0
+# Optional, for iPhone .heic photos:
+# pillow-heif
